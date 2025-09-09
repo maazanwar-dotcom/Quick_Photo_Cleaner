@@ -1,22 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-
+import 'package:quick_photo_sorter/screens/date_selection_screen.dart';
 import 'services/app_state.dart';
-import 'services/photo_sorter_model.dart'; // ← Import your model
+import 'services/photo_sorter_model.dart';
 import 'screens/splash_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/permission_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/swipe_sort_screen.dart';
+import 'screens/trash_screen.dart'; // ← Import trash screen
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final photoSorterModel = PhotoSorterModel();
+  photoSorterModel.loadAllImages();
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => AppState()..initialize()),
-        ChangeNotifierProvider(
-          create: (_) => PhotoSorterModel(), // ← New provider here
-        ),
+        ChangeNotifierProvider(create: (_) => PhotoSorterModel()),
+        ChangeNotifierProvider.value(value: photoSorterModel),
       ],
       child: const QuickPhotoSorter(),
     ),
@@ -37,6 +40,9 @@ class QuickPhotoSorter extends StatelessWidget {
         OnboardingScreen.routeName: (_) => const OnboardingScreen(),
         PermissionScreen.routeName: (_) => const PermissionScreen(),
         HomeScreen.routeName: (_) => const HomeScreen(),
+        TrashScreen.routeName: (_) => const TrashScreen(),
+        DateSelectionScreen.routeName: (context) =>
+            DateSelectionScreen(), // Add this line
         SwipeSortScreen.routeName: (ctx) {
           final modeName = ModalRoute.of(ctx)!.settings.arguments as String;
           return SwipeSortScreen(modeName: modeName);

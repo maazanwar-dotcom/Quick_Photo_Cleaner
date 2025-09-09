@@ -12,6 +12,8 @@ enum SortMode { all, byDate, cluster }
 /// for loading, filtering, and swiping photos.
 class PhotoSorterModel extends ChangeNotifier {
   // ─── Private storage ────────────────────────────────────────────────
+  bool _isInitializing = false;
+  bool get isInitializing => _isInitializing;
 
   /// All images in the gallery (loaded once).
   List<AssetEntity> _allImages = [];
@@ -22,6 +24,9 @@ class PhotoSorterModel extends ChangeNotifier {
   /// Keeps track of the last-swiped asset & whether it was kept.
   AssetEntity? _lastActionAsset;
   bool _lastActionKept = false;
+
+  /// Cache for processed photo IDs to avoid repeated disk reads
+  Set<String>? _cachedProcessedIds;
 
   // ─── Persistent storage keys ────────────────────────────────────────
 
@@ -53,6 +58,9 @@ class PhotoSorterModel extends ChangeNotifier {
 
   /// Call this once at app start to request permissions and load images.
   Future<void> loadAllImages() async {
+    if (_isInitializing) return; // Prevent re-entrance
+    _isInitializing = true;
+    notifyListeners();
     final res = await PhotoManager.requestPermissionExtend();
     if (!res.isAuth) return;
 
@@ -65,7 +73,7 @@ class PhotoSorterModel extends ChangeNotifier {
 
     // PRELOAD thumbnails for a snappier first few swipes
     await cacheThumbnails(count: 50);
-
+    _isInitializing = false;
     notifyListeners();
   }
 
@@ -115,17 +123,23 @@ class PhotoSorterModel extends ChangeNotifier {
     }
   }
 
-  /// Filter out already processed photos from working list
+  /// Filter out already processed photos from working list (OPTIMIZED)
   Future<void> _filterProcessedPhotos() async {
-    final prefs = await SharedPreferences.getInstance();
-    final processedIds = prefs.getStringList(_processedPhotosKey) ?? [];
+    // Only read from disk if cache is empty
+    if (_cachedProcessedIds == null) {
+      final prefs = await SharedPreferences.getInstance();
+      final processedIds = prefs.getStringList(_processedPhotosKey) ?? [];
+      _cachedProcessedIds = Set.from(
+        processedIds,
+      ); // Convert to Set for faster lookups
+    }
 
     _workingList = _allImages.where((photo) {
-      return !processedIds.contains(photo.id);
+      return !_cachedProcessedIds!.contains(photo.id);
     }).toList();
 
     print('Total photos: ${_allImages.length}');
-    print('Already processed: ${processedIds.length}');
+    print('Already processed: ${_cachedProcessedIds!.length}');
     print('Remaining to sort: ${_workingList.length}');
   }
 
@@ -171,7 +185,7 @@ class PhotoSorterModel extends ChangeNotifier {
     }
   }
 
-  /// Mark photo as processed
+  /// Mark photo as processed (OPTIMIZED)
   Future<void> _markAsProcessed(String photoId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -180,13 +194,16 @@ class PhotoSorterModel extends ChangeNotifier {
       if (!processedIds.contains(photoId)) {
         processedIds.add(photoId);
         await prefs.setStringList(_processedPhotosKey, processedIds);
+
+        // Update cache
+        _cachedProcessedIds?.add(photoId);
       }
     } catch (e) {
       print('Error marking photo as processed: $e');
     }
   }
 
-  /// Unmark photo as processed (for undo)
+  /// Unmark photo as processed (for undo) (OPTIMIZED)
   Future<void> _unmarkAsProcessed(String photoId) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -194,6 +211,9 @@ class PhotoSorterModel extends ChangeNotifier {
 
       processedIds.remove(photoId);
       await prefs.setStringList(_processedPhotosKey, processedIds);
+
+      // Update cache
+      _cachedProcessedIds?.remove(photoId);
     } catch (e) {
       print('Error unmarking photo as processed: $e');
     }
@@ -201,15 +221,15 @@ class PhotoSorterModel extends ChangeNotifier {
 
   // ─── Mode Selection ────────────────────────────────────────────────
 
-  /// Mode 1: straight swipe all images (but filter processed photos)
+  /// Mode 1: straight swipe all images (but filter processed photos) (OPTIMIZED)
   Future<void> useAll() async {
     mode = SortMode.all;
-    await _filterProcessedPhotos(); // Filter out processed photos
+    await _filterProcessedPhotos(); // Now much faster due to caching
     _resetResults();
     notifyListeners();
   }
 
-  /// Mode 2: filter by exact date (year/month/day) and exclude processed
+  /// Mode 2: filter by exact date (year/month/day) and exclude processed (OPTIMIZED)
   Future<void> filterByDate(DateTime date) async {
     mode = SortMode.byDate;
     selectedDate = date;
@@ -220,19 +240,22 @@ class PhotoSorterModel extends ChangeNotifier {
       return d.year == date.year && d.month == date.month && d.day == date.day;
     }).toList();
 
-    // Then filter out processed photos
-    final prefs = await SharedPreferences.getInstance();
-    final processedIds = prefs.getStringList(_processedPhotosKey) ?? [];
+    // Then filter out processed photos using cache
+    if (_cachedProcessedIds == null) {
+      final prefs = await SharedPreferences.getInstance();
+      final processedIds = prefs.getStringList(_processedPhotosKey) ?? [];
+      _cachedProcessedIds = Set.from(processedIds);
+    }
 
     _workingList = dateFiltered.where((photo) {
-      return !processedIds.contains(photo.id);
+      return !_cachedProcessedIds!.contains(photo.id);
     }).toList();
 
     _resetResults();
     notifyListeners();
   }
 
-  /// Mode 3: cluster ±30min around the seed photo and exclude processed
+  /// Mode 3: cluster ±30min around the seed photo and exclude processed (OPTIMIZED)
   Future<void> clusterAround(AssetEntity seed) async {
     mode = SortMode.cluster;
     seedPhoto = seed;
@@ -244,12 +267,15 @@ class PhotoSorterModel extends ChangeNotifier {
       return diff <= 30;
     }).toList();
 
-    // Then filter out processed photos
-    final prefs = await SharedPreferences.getInstance();
-    final processedIds = prefs.getStringList(_processedPhotosKey) ?? [];
+    // Then filter out processed photos using cache
+    if (_cachedProcessedIds == null) {
+      final prefs = await SharedPreferences.getInstance();
+      final processedIds = prefs.getStringList(_processedPhotosKey) ?? [];
+      _cachedProcessedIds = Set.from(processedIds);
+    }
 
     _workingList = clusterFiltered.where((photo) {
-      return !processedIds.contains(photo.id);
+      return !_cachedProcessedIds!.contains(photo.id);
     }).toList();
 
     _resetResults();
@@ -318,6 +344,73 @@ class PhotoSorterModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ─── Trash Management Methods ──────────────────────────────────────
+
+  /// Recover a photo from trash back to the working list
+  Future<void> recoverFromTrash(AssetEntity asset) async {
+    try {
+      // Remove from discarded list
+      discarded.remove(asset);
+
+      // Remove from persistent storage
+      await _removePhotoDecision(asset.id, false);
+
+      // Unmark as processed so it appears in working list
+      await _unmarkAsProcessed(asset.id);
+
+      // Add back to working list if it's not already there
+      if (!_workingList.contains(asset)) {
+        _workingList.insert(0, asset); // Add to front
+      }
+
+      notifyListeners();
+      print('Photo ${asset.id} recovered from trash');
+    } catch (e) {
+      print('Error recovering photo from trash: $e');
+      rethrow;
+    }
+  }
+
+  /// Remove a photo from trash records after permanent deletion
+  Future<void> removeFromTrashPermanently(AssetEntity asset) async {
+    try {
+      // Remove from discarded list
+      discarded.remove(asset);
+
+      // Remove from all persistent storage
+      await _removePhotoDecision(asset.id, false);
+      await _unmarkAsProcessed(asset.id);
+
+      // Remove from all images list as it no longer exists
+      _allImages.remove(asset);
+
+      notifyListeners();
+      print('Photo ${asset.id} permanently removed from records');
+    } catch (e) {
+      print('Error removing photo from records: $e');
+      rethrow;
+    }
+  }
+
+  /// Empty the entire trash (remove all discarded photos from records)
+  Future<void> emptyTrash() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // Clear discarded photos from persistent storage
+      await prefs.remove(_discardedPhotosKey);
+
+      // Clear from memory
+      discarded.clear();
+
+      notifyListeners();
+      print('Trash emptied successfully');
+    } catch (e) {
+      print('Error emptying trash: $e');
+      rethrow;
+    }
+  }
+
   // ─── Additional Persistence Methods ────────────────────────────────
 
   /// Get kept photos by loading from persistent storage
@@ -336,6 +429,11 @@ class PhotoSorterModel extends ChangeNotifier {
   /// Get discarded photos by loading from persistent storage
   Future<List<AssetEntity>> getDiscardedPhotos() async {
     try {
+      // Ensure images are loaded first
+      if (_allImages.isEmpty) {
+        await loadAllImages();
+      }
+
       final prefs = await SharedPreferences.getInstance();
       final discardedIds = prefs.getStringList(_discardedPhotosKey) ?? [];
 
@@ -359,6 +457,7 @@ class PhotoSorterModel extends ChangeNotifier {
       kept.clear();
       discarded.clear();
       _lastActionAsset = null;
+      _cachedProcessedIds = null; // Clear cache
 
       // Reload all photos without processed filter
       _workingList = List.from(_allImages);
@@ -368,6 +467,39 @@ class PhotoSorterModel extends ChangeNotifier {
     } catch (e) {
       print('Error resetting data: $e');
     }
+  }
+
+  /// Use a specific list of photos for sorting (for date-based sorting)
+  Future<void> usePhotosFromList(List<AssetEntity> photos) async {
+    _workingList.clear();
+
+    // Ensure processed photos cache is loaded
+    if (_cachedProcessedIds == null) {
+      final prefs = await SharedPreferences.getInstance();
+      final processedIds = prefs.getStringList(_processedPhotosKey) ?? [];
+      _cachedProcessedIds = Set.from(processedIds);
+    }
+
+    // Only include photos that are not already processed
+    for (final photo in photos) {
+      if (!_cachedProcessedIds!.contains(photo.id)) {
+        _workingList.add(photo);
+      }
+    }
+
+    // Shuffle for variety
+    _workingList.shuffle();
+
+    // Set mode and reset results
+    mode = SortMode.byDate; // or create a new mode for custom lists
+    _resetResults();
+
+    notifyListeners();
+  }
+
+  /// Get all photos (useful for date grouping)
+  List<AssetEntity> getAllPhotos() {
+    return List.from(_allImages);
   }
 
   /// Get statistics

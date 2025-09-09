@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:flutter_card_swiper/flutter_card_swiper.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/photo_sorter_model.dart';
 
@@ -39,6 +40,9 @@ class _SwipeSortScreenState extends State<SwipeSortScreen>
   Timer? _hideTimer;
   Timer? _tutorialTimer;
 
+  // SharedPreferences key for tutorial
+  static const String _tutorialShownKey = 'fullscreen_tutorial_shown';
+
   @override
   void initState() {
     super.initState();
@@ -63,8 +67,10 @@ class _SwipeSortScreenState extends State<SwipeSortScreen>
   void _initializePhotos() async {
     final sorter = context.read<PhotoSorterModel>();
 
-    // Initialize the model (loads persisted data and filters processed photos)
-    await sorter.initialize();
+    // Only initialize if not already loaded (prevents duplicate loading)
+    if (sorter.totalCount == 0) {
+      await sorter.initialize();
+    }
 
     // Always sync with the model's working list
     _syncWithModel();
@@ -151,14 +157,24 @@ class _SwipeSortScreenState extends State<SwipeSortScreen>
   }
 
   void _checkAndShowTutorial() async {
-    // Check if tutorial was shown before (you can use SharedPreferences for persistence)
-    // For now, we'll show it every time - you can modify this logic
-    final shouldShowTutorial = true; // Replace with SharedPreferences check
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final tutorialShown = prefs.getBool(_tutorialShownKey) ?? false;
 
-    if (shouldShowTutorial) {
-      await Future.delayed(Duration(milliseconds: 500)); // Small delay
+      if (!tutorialShown && mounted && _collapsed) {
+        await Future.delayed(Duration(milliseconds: 500)); // Small delay
+        if (mounted && _collapsed) {
+          _showTutorialDialog();
+        }
+      }
+    } catch (e) {
+      print('Error checking tutorial preference: $e');
+      // If SharedPreferences fails, show tutorial anyway for better UX
       if (mounted && _collapsed) {
-        _showTutorialDialog();
+        await Future.delayed(Duration(milliseconds: 500));
+        if (mounted && _collapsed) {
+          _showTutorialDialog();
+        }
       }
     }
   }
@@ -246,10 +262,10 @@ class _SwipeSortScreenState extends State<SwipeSortScreen>
           ),
           actions: [
             TextButton(
-              onPressed: () {
+              onPressed: () async {
+                await _setTutorialShown(true);
                 Navigator.of(context).pop();
                 _startZoneHighlights();
-                // TODO: Save "don't show again" preference
               },
               child: Text(
                 "Don't show again",
@@ -260,9 +276,6 @@ class _SwipeSortScreenState extends State<SwipeSortScreen>
               onPressed: () {
                 Navigator.of(context).pop();
                 _startZoneHighlights();
-                setState(() {
-                  _showZoneHighlights = false;
-                });
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: Color(0xFFB57AF2),
@@ -282,6 +295,15 @@ class _SwipeSortScreenState extends State<SwipeSortScreen>
         );
       },
     );
+  }
+
+  Future<void> _setTutorialShown(bool shown) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_tutorialShownKey, shown);
+    } catch (e) {
+      print('Error saving tutorial preference: $e');
+    }
   }
 
   void _startZoneHighlights() {
@@ -362,8 +384,22 @@ class _SwipeSortScreenState extends State<SwipeSortScreen>
           children: [
             // Main Content
             !_isInitialized
-                ? circularProgressIndicator(
-                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ? Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      circularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                      SizedBox(height: 20),
+                      Text(
+                        "Almost There...",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   )
                 : _images.isEmpty
                 ? _buildNoPhotosView()
